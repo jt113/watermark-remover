@@ -1,149 +1,164 @@
 # Temporal Video Overlay Removal Toolkit
 
-This repository contains a command-line workflow for extracting video frames, describing unwanted overlays, and cleaning them using classical, optical-flow, FFmpeg delogo, or state-of-the-art deep inpainting models. The instructions below walk through the full setup on macOS (Apple Silicon) and describe how to run each stage end to end.
+Clean text or watermark overlays from videos using frame extraction, overlay metadata, and several restoration backends (temporal median, flow-aligned aggregation, FFmpeg delogo, or the E2FGVI-HQ deep model). This README covers the full workflow, including a Google Compute Engine L4 setup for fast inference.
 
 ---
-## 1. Prerequisites
+## 1. Repository Layout
 
-- macOS with Apple Silicon (tested on M3)
-- Homebrew (`/opt/homebrew/bin/brew`)
-- Python 3.9+ (system Python is fine for the classical pipeline)
-- Xcode command-line tools (`xcode-select --install`)
-
-### 1.1 Clone the project
-```bash
-cd ~/cool
-git clone https://github.com/your-org/temporal-vid-edit.git
-cd temporal-vid-edit
+```
+project-root/
+├── main.py                    # CLI entrypoint
+├── requirements.txt           # Base dependencies (OpenCV, NumPy)
+├── temporal_vid_edit/         # Core Python package
+│   ├── frames.py              # Frame extraction utilities
+│   ├── overlays.py            # Overlay JSON helpers
+│   ├── inpaint.py             # Temporal median model
+│   ├── flow_inpaint.py        # Optical-flow aggregation
+│   ├── ffmpeg_delogo.py       # FFmpeg delogo pipeline
+│   └── deep_inpaint.py        # Segment export + external model hook
+├── scripts/
+│   ├── download_e2fgvi.py     # Clone/download E2FGVI repo & weights
+│   ├── run_deep_inpaint.py    # Orchestrates the deep backend
+│   └── e2fgvi_infer.py        # Headless wrapper around E2FGVI test script
+├── util/overlay-picker.html   # Browser helper for selecting overlay regions
+└── frames/, overlays.json, cleaned_*.mp4, etc. (generated artefacts)
 ```
 
 ---
-## 2. Base environment for classical/flow pipelines
+## 2. Preparing Overlay Metadata
 
-1. Create a Python virtual environment (example with `python3`):
+These steps run comfortably on your local machine (macOS, Linux, or Windows):
+
+1. **Create a Python virtual environment**
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
-   ```
-
-2. Install the required Python packages:
-   ```bash
    pip install -r requirements.txt
    ```
 
-3. Verify OpenCV can load and write frames:
+2. **Extract frames** from the source video:
    ```bash
-   python -m pip show opencv-python
+   python main.py extract input_video.mp4 frames
    ```
+   This writes sequential PNG frames to `frames/` and generates `frames/metadata.json` (timestamps, FPS, etc.).
+
+3. **Annotate overlays** via the browser helper:
+   ```
+   open util/overlay-picker.html   # or double-click in Finder/Explorer
+   ```
+   - Load a representative frame image.
+   - Click the four corners of the overlay.
+   - Use the optional “Frame range (e.g. 0-65)” field to duplicate the region across many frames.
+   - Click “Add region to list” to append entries to the JSON preview.
+   - Copy the output into `overlays.json` (one entry per frame with `frame`, `x1`, `y1`, `x2`, `y2`).
+
+4. **Choose a restoration backend**:
+   - `temporal` (default): temporal median fills with optional OpenCV Telea fallback.
+   - `flow`: optical-flow alignment + Poisson blending (good for mid-length overlays).
+   - `delogo`: FFmpeg’s `delogo` filter on the original video (requires `ffmpeg`).
+   - `deep`: E2FGVI-HQ neural inpainting (GPU recommended; see section 3).
 
 ---
-## 3. Deep inpainting environment (E2FGVI-HQ)
+## 3. GPU Inference on Google Compute Engine (L4)
 
-The deep pipeline uses a separate Conda environment tuned to the model’s dependencies.
+Running the deep model on CPU is slow (~10 minutes for a short clip). A single NVIDIA L4 (24 GB) on Google Compute Engine cuts this to ~1–2 minutes. These steps assume Ubuntu 22.04.
 
-### 3.1 Install Miniforge (Conda-forge variant)
+### 3.1 Launch an L4 instance
+1. In Google Cloud Console → Compute Engine → VM instances → **Create Instance**.
+2. Use machine family **g2-standard-4** (4 vCPU, 32 GB RAM) with **1× L4 GPU**.
+3. Boot disk: Ubuntu 22.04 LTS (x86_64).
+4. Allow HTTP/HTTPS if you’ll download files directly; otherwise leave default.
+5. Create and SSH into the VM.
+
+### 3.2 Install system packages and NVIDIA drivers
 ```bash
-# Download and install silently to ~/miniforge3
-curl -L https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh -o ~/Miniforge3-MacOSX-arm64.sh
-bash ~/Miniforge3-MacOSX-arm64.sh -b -p ~/miniforge3
+sudo apt update
+sudo apt install -y build-essential git wget ffmpeg libglib2.0-0 libsm6 libxext6 libxrender-dev
+
+# Install NVIDIA drivers (L4 works well with the 535+ series)
+sudo apt install -y ubuntu-drivers-common
+sudo ubuntu-drivers autoinstall
+sudo reboot
+```
+Reconnect after the reboot:
+```bash
+nvidia-smi  # should list the L4 GPU
 ```
 
-### 3.2 Accept Anaconda ToS (if prompted)
-Miniforge defaults to conda-forge channels, which do not require ToS acceptance. If the system prompts for Anaconda ToS, run:
+### 3.3 Install Miniforge (Conda-forge distribution)
 ```bash
-eval "$(~/miniforge3/bin/conda shell.zsh hook)"
-conda tos accept --channel https://repo.anaconda.com/pkgs/main --tos-root $HOME/.conda_tos
-conda tos accept --channel https://repo.anaconda.com/pkgs/r --tos-root $HOME/.conda_tos
+curl -L https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -o ~/Miniforge3.sh
+bash ~/Miniforge3.sh -b -p ~/miniforge3
+source ~/miniforge3/bin/activate
 ```
+(If you prefer Miniconda that works too; adjust paths accordingly.)
 
-### 3.3 Create the `e2fgvi` environment
+### 3.4 Create the `e2fgvi` environment with GPU PyTorch + mmcv
 ```bash
-eval "$(~/miniforge3/bin/conda shell.zsh hook)"
 conda create -n e2fgvi python=3.9 -y
 conda activate e2fgvi
+
+# PyTorch 1.12.1 with CUDA 11.3 (compatible with mmcv-full 1.7.x)
+pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 \
+    --index-url https://download.pytorch.org/whl/cu113
+
+# mmcv-full wheel for torch 1.12 / CUDA 11.3
+pip install mmcv-full==1.7.2 -f \
+    https://download.openmmlab.com/mmcv/dist/cu113/torch1.12.0/index.html
+
+# Remaining dependencies
+pip install numpy==1.23.5 opencv-python pillow tqdm pyyaml matplotlib
 ```
+> **Note:** If Google updates the images to newer CUDA versions, ensure the driver supports CUDA 11.3 (most do). You can also move to torch 1.13 + cu117 with the corresponding mmcv wheel if preferred.
 
-### 3.4 Install compatible PyTorch and MMCV
+### 3.5 Clone the project and copy assets
 ```bash
-# PyTorch / torchvision / torchaudio CPU wheels compatible with mmcv 1.7.x
-pip install torch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# Install mmcv-full for torch 1.12 CPU
-pip install mmcv-full==1.7.2 -f https://download.openmmlab.com/mmcv/dist/cpu/torch1.12.0/index.html
+cd ~
+git clone https://github.com/your-org/temporal-vid-edit.git
+cd temporal-vid-edit
 ```
+Transfer `frames/`, `overlays.json`, and any necessary assets from your local machine. Common options:
+- `gcloud compute scp --recurse ~/cool/temporal-vid-edit/frames <instance>:/home/<user>/temporal-vid-edit/frames`
+- `gsutil cp` to/from a Cloud Storage bucket
+- `rsync` over SSH if you have larger datasets
 
-### 3.5 Install remaining dependencies
+### 3.6 Fetch the E2FGVI-HQ model
 ```bash
-pip install numpy==1.23.5 opencv-python==4.6.0.66 pillow tqdm pyyaml matplotlib
-```
-
----
-## 4. Project setup tasks
-
-### 4.1 Download the deep model
-The toolkit provides helper scripts under `scripts/`.
-
-```bash
-# From project root
-eval "$(~/miniforge3/bin/conda shell.zsh hook)"
 conda activate e2fgvi
-python scripts/download_e2fgvi.py  # clones repo into third_party/E2FGVI and pulls checkpoints
+python scripts/download_e2fgvi.py
 ```
+If you already have `E2FGVI-HQ-CVPR22.pth`, place it under `third_party/E2FGVI/release_model/`.
 
-If you already have the checkpoint file (e.g., `third_party/E2FGVI/release_model/E2FGVI-HQ-CVPR22.pth`), skip the download step.
-
-### 4.2 Verify helper scripts load
+### 3.7 Run deep inpainting on the GPU
 ```bash
-python -m py_compile scripts/run_deep_inpaint.py scripts/e2fgvi_infer.py
+conda activate e2fgvi
+python scripts/run_deep_inpaint.py \
+  --frames frames \
+  --overlays overlays.json \
+  --output-video cleaned_deep.mp4 \
+  --context 6 \
+  --python $(which python) \
+  --extra --deep-weights third_party/E2FGVI/release_model/E2FGVI-HQ-CVPR22.pth \
+  --extra --deep-weights-arg=--ckpt
 ```
+- The helper exports masked segments, runs `scripts/e2fgvi_infer.py`, and stitches outputs.
+- Results appear as `cleaned_deep.mp4` in the project root (plus temporary data in `/tmp/deep_inpaint_*`).
+- Copy the video back to your machine when done and **stop/delete** the VM to avoid charges.
 
 ---
-## 5. Workflow overview
+## 4. Alternative Backends (no GPU required)
 
-1. **Extract frames** from the source video.
-2. **Annotate overlays** (JSON file listing frame indices and bounding boxes).
-3. **Clean overlays** using one of the supported methods.
-4. **Inspect outputs** (frames and/or rendered video).
+All commands below run in the local `.venv` environment created earlier.
 
-All commands assume you are in the project root.
-
----
-## 6. Frame extraction
-```bash
-source .venv/bin/activate
-python main.py extract input_video.mp4 frames
-```
-- Outputs numbered PNGs (`frames/frame_000000.png`, …) and `frames/metadata.json` capturing timestamps and FPS.
-
----
-## 7. Create overlay metadata
-
-Use `util/overlay-picker.html` to load a representative frame and click four corners of the overlay. The tool snaps to grid, produces JSON entries, and supports multiple regions per frame.
-
-Example `overlays.json` entry:
-```json
-[
-  {"frame": 0, "x1": 14, "y1": 52, "x2": 98, "y2": 84},
-  {"frame": 1, "x": 14, "y": 52, "width": 84, "height": 32}
-]
-```
-
-Only list frames that actually contain the intrusive text or watermark.
-
----
-## 8. Cleaning overlays
-
-### 8.1 Temporal median (default)
+### 4.1 Temporal median model
 ```bash
 source .venv/bin/activate
 python main.py inpaint frames overlays.json \
   --output-video cleaned_temporal.mp4 \
   --window 2
 ```
-- Useful for short-lived overlays or when neighboring frames provide clean pixels.
 
-### 8.2 Optical-flow aggregation (`--method flow`)
+### 4.2 Flow-aligned model
 ```bash
 source .venv/bin/activate
 python main.py inpaint frames overlays.json \
@@ -151,11 +166,10 @@ python main.py inpaint frames overlays.json \
   --output-video cleaned_flow.mp4 \
   --window 3 \
   --flow-max-sources 8 \
-  --flow-max-distance 200
+  --flow-max-distance 150
 ```
-- Warps overlay-free frames toward the target and blends with Poisson cloning for smoother fills.
 
-### 8.3 FFmpeg delogo (`--method delogo`)
+### 4.3 FFmpeg delogo
 ```bash
 source .venv/bin/activate
 python main.py inpaint frames overlays.json \
@@ -163,81 +177,52 @@ python main.py inpaint frames overlays.json \
   --output-video cleaned_delogo.mp4 \
   --codec libx264
 ```
-- Delegates to FFmpeg’s `delogo` filter using the original video reference (requires `ffmpeg` installed).
-
-### 8.4 Deep inpainting (`--method deep`)
-1. Activate the `e2fgvi` environment:
-   ```bash
-   eval "$(~/miniforge3/bin/conda shell.zsh hook)"
-   conda activate e2fgvi
-   ```
-
-2. Run the helper script (Point `--deep-weights` to your downloaded checkpoint if different):
-   ```bash
-   python scripts/run_deep_inpaint.py \
-     --frames frames \
-     --overlays overlays.json \
-     --output-video cleaned_deep.mp4 \
-     --context 6 \
-     --python $(which python) \
-     --extra --deep-weights third_party/E2FGVI/release_model/E2FGVI-HQ-CVPR22.pth \
-     --extra --deep-weights-arg=--ckpt
-   ```
-- The runner exports masked segments, invokes `scripts/e2fgvi_infer.py`, and stitches the hallucinated frames back into the master sequence.
-
-3. Optional flags:
-   - `--extra --deep-extra-arg=--step 15` to adjust E2FGVI’s stride.
-   - `--deep-context <N>` to expand temporal padding around overlay spans.
+Make sure `ffmpeg` is installed on your machine (`brew install ffmpeg` or `sudo apt install ffmpeg`).
 
 ---
-## 9. Outputs and verification
+## 5. Troubleshooting & Tips
 
-- Cleaned video: `cleaned_*.mp4`
-- Optional cleaned frames: use `--output-frames cleaned_frames` to inspect per-frame results.
-- Temporary deep inpainting clips: set `--deep-keep-temp` when debugging to keep the exported segment directories under `/tmp/deep_inpaint_*`.
-
-Inspect the cleaned video with any media player (`open cleaned_deep.mp4`).
-
----
-## 10. Troubleshooting
-
-- **mmcv-full install errors**: ensure you pair PyTorch 1.12.1 with the CPU wheel index `torch1.12.0`. Newer PyTorch versions (2.x) are incompatible with the released mmcv-full wheels.
-- **NumPy 2.x warnings**: downgrade NumPy to `1.23.5` in the `e2fgvi` environment and use `opencv-python==4.6.0.66` to maintain compatibility.
-- **Terms of Service errors (Anaconda)**: Miniforge avoids these by default. If you’re using Anaconda, set `CONDA_TOS_ROOT=$HOME/.conda_tos` before accepting.
-- **Missing packages**: The deep wrapper (`scripts/e2fgvi_infer.py`) prints explicit hints if PyTorch, Pillow, or OpenCV cannot be imported.
-- **Slow inference**: E2FGVI is GPU-accelerated but can run on CPU at the cost of runtime. Consider reducing context or overlay span for faster iterations.
+| Issue | Fix |
+|-------|-----|
+| `ModuleNotFoundError: torch` / `Pillow is required` | Install missing packages inside the active environment. The deep wrapper prints explicit hints. |
+| mmcv wheel build errors | Ensure torch version matches the wheel index (e.g., torch 1.12.1 with cu113 url). |
+| NumPy 2.x incompatibility warnings | Downgrade to `numpy==1.23.5` and use `opencv-python==4.6.0.66` in the `e2fgvi` env. |
+| Slow inference | Increase `--flow-max-sources`, use the L4 GPU pipeline, or reduce overlay spans. |
+| Overlay JSON ordering | The picker now sorts entries by frame automatically and supports range inputs. |
+| OpenAI Codex CLI | Install in either environment (`pip install openai-codex-cli`) and authenticate normally. |
 
 ---
-## 11. Directory structure reference
+## 6. Quick Reference Commands
 
-```
-project-root/
-├── main.py                      # CLI entrypoint
-├── requirements.txt             # Base dependencies
-├── scripts/
-│   ├── download_e2fgvi.py       # Clone E2FGVI repo & download checkpoint
-│   ├── run_deep_inpaint.py      # Orchestrates deep inpainting pipeline
-│   └── e2fgvi_infer.py          # Headless wrapper around E2FGVI test script
-├── temporal_vid_edit/
-│   ├── frames.py                # Frame extraction utilities
-│   ├── overlays.py              # Overlay parsing helpers
-│   ├── inpaint.py               # Temporal median inpainting
-│   ├── flow_inpaint.py          # Optical-flow aggregation inpainting
-│   ├── ffmpeg_delogo.py         # FFmpeg delogo pipeline
-│   └── deep_inpaint.py          # Segment export + model orchestration
-├── util/overlay-picker.html     # Browser tool for selecting overlay bounds
-├── frames/                      # (generated) extracted frames + metadata
-├── overlays.json                # (user) overlay annotations
-├── cleaned_*.mp4                # (generated) cleaned videos
-└── third_party/E2FGVI/          # (downloaded) deep model repository
+```bash
+# Local prep (one-time)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py extract input.mp4 frames
+
+# Annotate overlays
+open util/overlay-picker.html
+
+# Fast GPU run on GCE (after environment setup)
+conda activate e2fgvi
+python scripts/run_deep_inpaint.py --frames frames --overlays overlays.json \
+  --output-video cleaned_deep.mp4 --context 6 --python $(which python) \
+  --extra --deep-weights third_party/E2FGVI/release_model/E2FGVI-HQ-CVPR22.pth \
+  --extra --deep-weights-arg=--ckpt
+
+# Alternative local cleanups
+python main.py inpaint frames overlays.json --output-video cleaned_temporal.mp4
+python main.py inpaint frames overlays.json --method flow --output-video cleaned_flow.mp4
+python main.py inpaint frames overlays.json --method delogo --output-video cleaned_delogo.mp4
 ```
 
 ---
-## 12. Summary
+## 7. Conclusion
 
-1. Set up two environments: `.venv` for classical methods, `e2fgvi` (Conda) for deep inpainting.
-2. Extract frames, annotate overlays, and run the desired cleaning method.
-3. Use the helper scripts to manage E2FGVI download, inference, and post-processing without manual path juggling.
-4. Inspect the cleaned outputs and iterate on overlay annotations or method parameters as needed.
+1. Prepare frames and overlay annotations locally.
+2. For heavy lifting, spin up a Google Compute L4 instance, configure the `e2fgvi` environment, and run the deep pipeline.
+3. Use the other backends for quick local iterations or further refinement.
+4. Copy outputs back, archive overlays, and shut down your cloud resources when done.
 
 Happy editing!
