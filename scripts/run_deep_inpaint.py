@@ -8,6 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    import torch
+except ImportError:  # pragma: no cover - torch required for GPU runs
+    torch = None
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FRAMES = Path("frames")
 DEFAULT_OVERLAYS = Path("overlays.json")
@@ -106,6 +111,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     ensure_model(download=args.download, forward_args=args.forward_args)
+
+    if torch is not None:
+        cuda_available = torch.cuda.is_available()
+        print(f"torch.cuda.is_available(): {cuda_available}")
+        if cuda_available:
+            device_index = torch.cuda.current_device()
+            device_name = torch.cuda.get_device_name(device_index)
+            print(f"Using GPU device {device_index}: {device_name}")
+        else:
+            print("No CUDA GPU detected; deep inpainting will run on CPU and may be slow.")
+    else:
+        print("PyTorch not available in this environment; skipping GPU check.")
 
     cmd = [
         args.python,
