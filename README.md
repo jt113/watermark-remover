@@ -217,6 +217,18 @@ python main.py inpaint frames overlays.json --method flow --output-video cleaned
 python main.py inpaint frames overlays.json --method delogo --output-video cleaned_delogo.mp4
 ```
 
+### AWS CDK automation
+If you prefer running on AWS instead of GCP, a TypeScript CDK project under `iac/` provisions a GPU host (default `g4dn.xlarge`):
+
+```bash
+cd iac
+npm install
+INSTANCE_KEY_NAME=my-key ./deploy.sh       # deploys the stack
+./destroy.sh                               # removes all resources
+```
+
+Pass additional context like `-c instanceType=g5.xlarge -c amiId=ami-...` to customise the stack for your region or AMI choice.
+
 ---
 ## 7. Conclusion
 
