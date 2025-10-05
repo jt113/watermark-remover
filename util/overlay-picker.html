@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Overlay Region Picker</title>
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      color-scheme: light dark;
+    }
+
+    body {
+      margin: 0;
+      padding: 1.5rem;
+      display: grid;
+      gap: 1.5rem;
+      background: #1e1e1e;
+      color: #f4f4f4;
+    }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      align-items: center;
+    }
+
+    fieldset {
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 6px;
+      padding: 1rem;
+      min-width: 260px;
+    }
+
+    legend {
+      padding: 0 0.4rem;
+      font-weight: 600;
+    }
+
+    canvas {
+      max-width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      border-radius: 4px;
+      background: #111;
+    }
+
+    label {
+      display: flex;
+      flex-direction: column;
+      font-size: 0.9rem;
+      gap: 0.35rem;
+    }
+
+    input[type="number"],
+    input[type="file"],
+    textarea,
+    button {
+      font: inherit;
+    }
+
+    input,
+    textarea {
+      padding: 0.5rem;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: rgba(0, 0, 0, 0.2);
+      color: inherit;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      resize: vertical;
+    }
+
+    button {
+      cursor: pointer;
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: rgba(255, 255, 255, 0.08);
+      color: inherit;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .controls {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+
+    .grid-field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .grid-options {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    .point-list {
+      display: flex;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      font-size: 0.9rem;
+    }
+
+    .point-chip {
+      padding: 0.3rem 0.6rem;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    @media (prefers-color-scheme: light) {
+      body {
+        background: #f6f6f6;
+        color: #222;
+      }
+
+      canvas {
+        background: #fff;
+      }
+
+      input,
+      textarea {
+        background: #fff;
+        color: inherit;
+      }
+
+      button {
+        background: #fff;
+        color: inherit;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Overlay Region Picker</h1>
+    <p>Select four points in a frame to generate an overlay entry for <code>overlays.json</code>.</p>
+  </header>
+
+  <section class="controls">
+    <fieldset>
+      <legend>Frame Setup</legend>
+      <label>
+        Frame number
+        <input id="frameInput" type="number" min="0" value="0" />
+      </label>
+      <label>
+        Frame range (optional, e.g. 67-132)
+        <input id="frameRange" type="text" placeholder="" />
+      </label>
+      <label>
+        Select frame image
+        <input id="imageInput" type="file" accept="image/*" />
+      </label>
+      <div class="grid-field">
+        <label for="gridSize">Snap grid (px)</label>
+        <div class="grid-options">
+          <input id="gridSize" type="number" min="1" value="2" step="1" />
+          <label style="flex-direction: row; align-items: center; gap: 0.4rem;">
+            <input id="gridToggle" type="checkbox" checked />
+            Show grid
+          </label>
+        </div>
+      </div>
+      <div class="grid-field">
+        <button id="resetPoints" type="button">Reset points</button>
+        <button id="undoPoint" type="button">Undo last point</button>
+      </div>
+      <p class="point-list" id="pointList"></p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Overlay JSON</legend>
+      <label>
+        Current region
+        <textarea id="currentRegion" readonly placeholder="Select four points to preview"></textarea>
+      </label>
+      <button id="saveRegion" type="button" disabled>Add region to list</button>
+      <label>
+        Overlay list
+        <textarea id="overlayList" readonly placeholder="Saved regions will appear here"></textarea>
+      </label>
+    </fieldset>
+  </section>
+
+  <section>
+    <canvas id="canvas" width="960" height="540">Your browser does not support canvas.</canvas>
+  </section>
+
+  <script>
+    const imageInput = document.getElementById('imageInput');
+    const frameInput = document.getElementById('frameInput');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const gridSizeInput = document.getElementById('gridSize');
+    const gridToggle = document.getElementById('gridToggle');
+    const resetPointsBtn = document.getElementById('resetPoints');
+    const undoPointBtn = document.getElementById('undoPoint');
+    const saveRegionBtn = document.getElementById('saveRegion');
+    const currentRegionArea = document.getElementById('currentRegion');
+    const overlayListArea = document.getElementById('overlayList');
+    const pointList = document.getElementById('pointList');
+    const frameRangeInput = document.getElementById('frameRange');
+
+    let imageBitmap = null;
+    let points = [];
+    const overlays = [];
+
+    function snap(value) {
+      const size = Math.max(1, parseInt(gridSizeInput.value, 10) || 1);
+      return Math.round(value / size) * size;
+    }
+
+    function drawScene() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (imageBitmap) {
+        ctx.drawImage(imageBitmap, 0, 0, canvas.width, canvas.height);
+      } else {
+        ctx.fillStyle = '#2a2a2a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      if (gridToggle.checked) {
+        drawGrid();
+      }
+
+      drawPoints();
+    }
+
+    function drawGrid() {
+      const size = Math.max(1, parseInt(gridSizeInput.value, 10) || 1);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= canvas.width; x += size) {
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, 0);
+        ctx.lineTo(x + 0.5, canvas.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= canvas.height; y += size) {
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(canvas.width, y + 0.5);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawPoints() {
+      ctx.save();
+      ctx.fillStyle = '#ffeb3b';
+      ctx.strokeStyle = '#ff9800';
+      ctx.lineWidth = 2;
+      points.forEach((pt, index) => {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#222';
+        ctx.font = '12px system-ui';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(index + 1), pt.x, pt.y);
+        ctx.fillStyle = '#ffeb3b';
+      });
+
+      if (points.length >= 2) {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        points.forEach((pt, idx) => {
+          if (idx === 0) {
+            ctx.moveTo(pt.x, pt.y);
+          } else {
+            ctx.lineTo(pt.x, pt.y);
+          }
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.restore();
+    }
+
+    function updatePointList() {
+      pointList.innerHTML = '';
+      points.forEach((pt, index) => {
+        const chip = document.createElement('span');
+        chip.className = 'point-chip';
+        chip.textContent = `${index + 1}: (${pt.x}, ${pt.y})`;
+        pointList.appendChild(chip);
+      });
+    }
+
+    function computeRegion() {
+      if (points.length !== 4) {
+        currentRegionArea.value = '';
+        saveRegionBtn.disabled = true;
+        return;
+      }
+
+      const xs = points.map((pt) => pt.x);
+      const ys = points.map((pt) => pt.y);
+      const region = {
+        frame: parseInt(frameInput.value, 10) || 0,
+        x1: Math.min(...xs),
+        y1: Math.min(...ys),
+        x2: Math.max(...xs),
+        y2: Math.max(...ys),
+      };
+
+      currentRegionArea.value = JSON.stringify(region, null, 2);
+      saveRegionBtn.disabled = false;
+    }
+
+    function resizeCanvasToImage(image) {
+      canvas.width = image.width;
+      canvas.height = image.height;
+    }
+
+    canvas.addEventListener('click', (event) => {
+      if (!imageBitmap) {
+        return;
+      }
+      if (points.length >= 4) {
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const rawX = (event.clientX - rect.left) * scaleX;
+      const rawY = (event.clientY - rect.top) * scaleY;
+      const snapped = { x: snap(rawX), y: snap(rawY) };
+      points = [...points, snapped];
+
+      updatePointList();
+      computeRegion();
+      drawScene();
+    });
+
+    resetPointsBtn.addEventListener('click', () => {
+      points = [];
+      updatePointList();
+      computeRegion();
+      drawScene();
+    });
+
+    undoPointBtn.addEventListener('click', () => {
+      points = points.slice(0, -1);
+      updatePointList();
+      computeRegion();
+      drawScene();
+    });
+
+    saveRegionBtn.addEventListener('click', () => {
+      if (points.length !== 4) {
+        return;
+      }
+      const region = JSON.parse(currentRegionArea.value);
+      const frameTargets = resolveFrameTargets(frameRangeInput.value, region.frame);
+      if (!frameTargets) {
+        return;
+      }
+      const newEntries = frameTargets.map((frameIndex) => ({ ...region, frame: frameIndex }));
+      overlays.push(...newEntries);
+      overlays.sort((a, b) => a.frame - b.frame);
+      overlayListArea.value = JSON.stringify(overlays, null, 2);
+      overlayListArea.scrollTop = overlayListArea.scrollHeight;
+      points = [];
+      updatePointList();
+      computeRegion();
+      drawScene();
+      frameRangeInput.value = '';
+    });
+
+    function resolveFrameTargets(rangeText, defaultFrame) {
+      const trimmed = (rangeText || '').trim();
+      if (!trimmed) {
+        return [defaultFrame];
+      }
+
+      const single = Number(trimmed);
+      if (!Number.isNaN(single)) {
+        return [single];
+      }
+
+      const match = trimmed.match(/^(\d+)\s*-\s*(\d+)$/);
+      if (!match) {
+        alert('Invalid frame range. Use a single number or start-end, e.g. 67-132.');
+        return null;
+      }
+
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      if (Number.isNaN(start) || Number.isNaN(end)) {
+        alert('Invalid frame range values.');
+        return null;
+      }
+
+      const low = Math.min(start, end);
+      const high = Math.max(start, end);
+      const frames = [];
+      for (let frame = low; frame <= high; frame += 1) {
+        frames.push(frame);
+      }
+      return frames;
+    }
+
+    gridSizeInput.addEventListener('change', () => {
+      const size = Math.max(1, parseInt(gridSizeInput.value, 10) || 1);
+      gridSizeInput.value = size;
+      if (!gridToggle.checked) {
+        return;
+      }
+      drawScene();
+    });
+
+    gridToggle.addEventListener('change', () => {
+      drawScene();
+    });
+
+    frameInput.addEventListener('change', () => {
+      computeRegion();
+    });
+
+    imageInput.addEventListener('change', async (event) => {
+      const [file] = event.target.files || [];
+      if (!file) {
+        return;
+      }
+      const bitmap = await createImageBitmap(file);
+      imageBitmap = bitmap;
+      resizeCanvasToImage(bitmap);
+      points = [];
+      updatePointList();
+      computeRegion();
+      drawScene();
+    });
+
+    drawScene();
+  </script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+# Python bytecode and build outputs
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Conda and Miniforge environments
+miniforge3/
+miniconda3/
+conda-bld/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# IDE/editor settings
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Logs and caches
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+__logs__/
+.cache/
+coverage/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*.bak
+*.old
+~$*
+
+# Application artifacts
+frames/
+cleaned_*.mp4
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# Deep inpainting intermediates
+/tmp/deep_inpaint_*/
+deep_inpaint_*/
+third_party/*/
+!third_party/README.md
+
+# Model checkpoints and large binaries
+overlays.json
+*.pth
+*.ckpt
+
+# Local environment config
+.env
+.env.local
+*.tokens
+
+# Node/npm dependencies (not currently used but future-proof)
+node_modules/
+pm-debug.log
+yarn.lock
+package-lock.json
+
+# Misc
+*.iml
+*.ipr
+*.iws
