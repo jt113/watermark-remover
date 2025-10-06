@@ -112,6 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--set_size", action="store_true")
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
+    parser.add_argument("--device", choices=["auto", "cpu", "gpu"], default="auto")
     return parser
 
 
@@ -131,7 +132,52 @@ def main() -> None:
     if not Path(args.ckpt).exists():
         raise SystemExit(f"Checkpoint not found: {args.ckpt}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    default_neighbor_stride = parser.get_default("neighbor_stride")
+    device_index: int | None = None
+    gpu_props: torch.cuda.DeviceProperties | None = None
+    total_mem_mb: int | None = None
+
+    if args.device == "cpu":
+        device = torch.device("cpu")
+    elif args.device == "gpu":
+        if not torch.cuda.is_available():
+            raise SystemExit("CUDA GPU requested via --device gpu but no CUDA device is available.")
+        device_index = torch.cuda.current_device()
+        gpu_props = torch.cuda.get_device_properties(device_index)
+        total_mem_mb = gpu_props.total_memory // (1024 * 1024)
+        print(f"Using CUDA device {device_index}: {gpu_props.name} ({total_mem_mb} MiB VRAM)")
+        device = torch.device("cuda")
+    else:
+        if torch.cuda.is_available():
+            device_index = torch.cuda.current_device()
+            gpu_props = torch.cuda.get_device_properties(device_index)
+            total_mem_mb = gpu_props.total_memory // (1024 * 1024)
+            if total_mem_mb <= 3072:
+                print(f"Detected CUDA device {device_index}: {gpu_props.name} ({total_mem_mb} MiB VRAM)")
+                print("VRAM below 3 GiB; running inference on CPU for stability.")
+                device = torch.device("cpu")
+                device_index = None
+                gpu_props = None
+                total_mem_mb = None
+            else:
+                print(f"Using CUDA device {device_index}: {gpu_props.name} ({total_mem_mb} MiB VRAM)")
+                device = torch.device("cuda")
+        else:
+            print("No CUDA device detected; running inference on CPU.")
+            device = torch.device("cpu")
+
+    if device.type == "cuda" and total_mem_mb is not None:
+        if args.num_ref == -1 and total_mem_mb <= 4096:
+            args.num_ref = 4
+            print("Auto-adjusted num_ref to 4 due to limited GPU memory.")
+
+        if (
+            args.neighbor_stride == default_neighbor_stride
+            and total_mem_mb <= 4096
+            and default_neighbor_stride > 3
+        ):
+            args.neighbor_stride = 3
+            print("Auto-adjusted neighbor_stride to 3 due to limited GPU memory.")
 
     if args.model == "e2fgvi":
         target_size = (432, 240)
@@ -151,10 +197,18 @@ def main() -> None:
     frames, target_size = resize_frames(frames, target_size)
     h, w = target_size[1], target_size[0]
     video_length = len(frames)
-    imgs = to_tensors()(frames).unsqueeze(0) * 2 - 1
+
+    to_tensor = to_tensors()
+    frame_tensors = torch.stack(
+        [(to_tensor([frame]).squeeze(0) * 2 - 1) for frame in frames], dim=0
+    )
     frames_np = [np.array(frame).astype(np.uint8) for frame in frames]
 
     masks = read_masks(mask_path, target_size)
+    if len(masks) != video_length:
+        raise SystemExit(
+            "Mask count does not match frame count. Ensure mask video has the same number of frames."
+        )
     binary_masks = []
     for mask in masks:
         mask_array = np.array(mask)
@@ -163,10 +217,7 @@ def main() -> None:
         else:
             mask_array = np.expand_dims((mask_array != 0).astype(np.uint8), axis=2)
         binary_masks.append(mask_array)
-    masks_tensor = to_tensors()(masks).unsqueeze(0)
-
-    imgs = imgs.to(device)
-    masks_tensor = masks_tensor.to(device)
+    mask_tensors = torch.stack([to_tensor([mask]).squeeze(0) for mask in masks], dim=0)
     comp_frames: list[np.ndarray | None] = [None] * video_length
 
     neighbor_stride = args.neighbor_stride
@@ -192,10 +243,12 @@ def main() -> None:
     for f in tqdm(range(0, video_length, neighbor_stride)):
         neighbor_ids = list(range(max(0, f - neighbor_stride), min(video_length, f + neighbor_stride + 1)))
         ref_ids = get_ref_index(f, neighbor_ids, video_length)
-        selected_imgs = imgs[:, neighbor_ids + ref_ids]
-        selected_masks = masks_tensor[:, neighbor_ids + ref_ids]
+        combined_ids = neighbor_ids + ref_ids
+
+        batch_imgs = frame_tensors[combined_ids].unsqueeze(0).to(device, non_blocking=True)
+        batch_masks = mask_tensors[combined_ids].unsqueeze(0).to(device, non_blocking=True)
         with torch.no_grad():
-            masked_imgs = selected_imgs * (1 - selected_masks)
+            masked_imgs = batch_imgs * (1 - batch_masks)
             mod_size_h = 60
             mod_size_w = 108
             h_pad = (mod_size_h - h % mod_size_h) % mod_size_h
@@ -215,6 +268,10 @@ def main() -> None:
                     comp_frames[neighbor_id] = (
                         comp_frames[neighbor_id].astype(np.float32) * 0.5 + comp.astype(np.float32) * 0.5
                     )
+
+        if device.type == "cuda":
+            del batch_imgs, batch_masks, masked_imgs
+            torch.cuda.empty_cache()
 
     writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*"mp4v"), default_fps, (w, h))
     if not writer.isOpened():
