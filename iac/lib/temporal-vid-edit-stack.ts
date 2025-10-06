@@ -7,10 +7,6 @@ export class TemporalVidEditStack extends cdk.Stack {
     super(scope, id, props);
 
     const keyName = this.node.tryGetContext('keyName') ?? process.env.EC2_KEY_NAME;
-    if (!keyName) {
-      throw new Error('Provide an EC2 key pair name via context (cdk deploy -c keyName=YOUR_KEY) or EC2_KEY_NAME env.');
-    }
-
     const vpcId = this.node.tryGetContext('vpcId');
     const vpc = vpcId
       ? ec2.Vpc.fromLookup(this, 'Vpc', { vpcId })
@@ -27,7 +23,7 @@ export class TemporalVidEditStack extends cdk.Stack {
       ? ec2.MachineImage.genericLinux({ [resolvedRegion]: amiId })
       : ec2.MachineImage.lookup({ name: amiNamePattern, owners: [amiOwner] });
 
-    const instanceType = this.node.tryGetContext('instanceType') ?? 'g4dn.xlarge';
+    const instanceType = this.node.tryGetContext('instanceType') ?? 'g5.xlarge';
 
     const securityGroup = new ec2.SecurityGroup(this, 'TemporalVidSg', {
       vpc,
@@ -67,6 +63,6 @@ export class TemporalVidEditStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'InstanceId', { value: instance.instanceId });
     new cdk.CfnOutput(this, 'PublicDns', { value: instance.instancePublicDnsName });
-    new cdk.CfnOutput(this, 'Region', { value: region });
+    new cdk.CfnOutput(this, 'Region', { value: resolvedRegion });
   }
 }

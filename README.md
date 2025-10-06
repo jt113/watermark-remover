@@ -131,7 +131,7 @@ If you already have `E2FGVI-HQ-CVPR22.pth`, place it under `third_party/E2FGVI/r
 
 ### 3.7 Run deep inpainting on the GPU
 ```bash
-conda activate e2fgvi
+source ~/miniforge3/bin/activate && conda activate e2fgvi && \
 python scripts/run_deep_inpaint.py \
   --frames frames \
   --overlays overlays.json \
@@ -218,7 +218,7 @@ python main.py inpaint frames overlays.json --method delogo --output-video clean
 ```
 
 ### AWS CDK automation
-If you prefer running on AWS instead of GCP, a TypeScript CDK project under `iac/` provisions a GPU host (default `g4dn.xlarge`):
+If you prefer running on AWS instead of GCP, a TypeScript CDK project under `iac/` provisions a GPU host (default `g5.xlarge`, A10G 24 GB, ~\$1/hr on-demand):
 
 ```bash
 cd iac
@@ -227,7 +227,7 @@ INSTANCE_KEY_NAME=my-key ./deploy.sh       # deploys the stack
 ./destroy.sh                               # removes all resources
 ```
 
-Pass additional context like `-c instanceType=g5.xlarge -c amiId=ami-...` to customise the stack for your region or AMI choice.
+Pass additional context like `-c instanceType=g4dn.xlarge` for a cheaper T4 option (~\$0.53/hr) or `-c amiId=ami-...` to pin a specific image.
 
 ---
 ## 7. Conclusion

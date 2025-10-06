@@ -14,6 +14,8 @@ if [[ -z "$KEY_NAME" ]]; then
   exit 1
 fi
 
+REGION=${CDK_DEPLOY_REGION:-${AWS_REGION:-us-east-1}}
+
 EXTRA_ARGS=()
 if [[ -n "${CDK_ADDITIONAL_CONTEXT:-}" ]]; then
   EXTRA_ARGS+=($CDK_ADDITIONAL_CONTEXT)
@@ -21,6 +23,7 @@ fi
 
 npx cdk deploy \
   --require-approval never \
+  --region "$REGION" \
   -c keyName="$KEY_NAME" \
-  "${EXTRA_ARGS[@]}" \
+  ${EXTRA_ARGS[@]:-} \
   "$@"

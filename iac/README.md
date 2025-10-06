@@ -29,7 +29,7 @@ iac/
 | Context key  | Description | Default |
 |--------------|-------------|---------|
 | `keyName`    | EC2 key pair name used for SSH access | **required** |
-| `instanceType` | EC2 instance type | `g4dn.xlarge` |
+| `instanceType` | EC2 instance type | `g5.xlarge` |
 | `amiId`      | AMI ID for the instance. Defaults include Deep Learning Base Ubuntu 22.04 images for `us-east-1`, `us-west-2`, `eu-west-1`. Provide your own for other regions. | varies |
 | `vpcId`      | Optional VPC ID. If omitted the default VPC is used. | default VPC |
 
@@ -41,12 +41,17 @@ Example: `npx cdk deploy -c keyName=my-key -c instanceType=g6.xlarge`.
 cd iac
 npm install
 
+# First-time only: bootstrap CDK resources (defaults to us-east-1)
+AWS_REGION=us-east-1 npx cdk bootstrap
+
 # Deploy (requires KEY_NAME env or -c keyName=...)
 INSTANCE_KEY_NAME=my-key ./deploy.sh
 
 # Destroy when finished
 ./destroy.sh
 ```
+
+`deploy.sh` defaults to deploying in **us-east-1**. Override by exporting `CDK_DEPLOY_REGION` or `AWS_REGION` before running (e.g. `CDK_DEPLOY_REGION=us-west-2 ./deploy.sh`).
 
 The stack outputs the instance ID, public DNS, and region once deployment succeeds.
 
@@ -63,6 +68,7 @@ The stack outputs the instance ID, public DNS, and region once deployment succee
 ## Notes
 
 - The default AMI IDs map to the AWS Deep Learning Base GPU Ubuntu 22.04 images as of early 2025. Newer images can be supplied via `-c amiId=...`.
+- Default instance type is `g5.xlarge` (NVIDIA A10G, 24 GB VRAM) which typically runs around **$1.00/hour** on-demand; specify `-c instanceType=g4dn.xlarge` if you prefer the cheaper T4 option (~$0.53/hour).
 - Security group opens SSH (port 22) to the world; tighten to your IP range if desired by editing the stack.
 - The root EBS volume is 200 GB gp3 and encrypted by default.
 - Instance includes a user-data script that installs Git, build essentials, FFmpeg, and Miniforge for convenience.
