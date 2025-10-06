@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import math
 import os
 import sys
 from pathlib import Path
@@ -197,6 +198,54 @@ def main() -> None:
     frames, target_size = resize_frames(frames, target_size)
     h, w = target_size[1], target_size[0]
     video_length = len(frames)
+
+    if device.type == "cuda" and total_mem_mb is not None and video_length > 0:
+        available_gib = total_mem_mb / 1024
+        megapixels = (w * h) / 1_000_000
+        # Allow larger batches on higher-memory cards and lower-resolution clips.
+        base_target = max(8, min(24, int(available_gib * (1.5 if megapixels <= 0.75 else 1.2))))
+        neighbor_window = min(video_length, args.neighbor_stride * 2 + 1)
+
+        if neighbor_window >= base_target:
+            # Ensure we keep at least a small neighbor context while respecting VRAM.
+            desired_window = max(3, base_target - 4)
+            new_neighbor_stride = max(1, (desired_window - 1) // 2)
+            if new_neighbor_stride < args.neighbor_stride:
+                print(
+                    f"Auto-adjusted neighbor_stride from {args.neighbor_stride} to {new_neighbor_stride} for VRAM budget."
+                )
+                args.neighbor_stride = new_neighbor_stride
+                neighbor_window = min(video_length, args.neighbor_stride * 2 + 1)
+
+        if neighbor_window >= base_target:
+            # If we still exceed the target, cap neighbors so references have room.
+            fallback_stride = max(1, (base_target - 3) // 2)
+            if fallback_stride < args.neighbor_stride:
+                print(
+                    f"Auto-adjusted neighbor_stride from {args.neighbor_stride} to {fallback_stride} for VRAM budget."
+                )
+                args.neighbor_stride = fallback_stride
+            neighbor_window = min(video_length, args.neighbor_stride * 2 + 1)
+
+        if args.num_ref == -1:
+            max_refs = max(1, base_target - neighbor_window)
+            est_refs = max(1, math.ceil(video_length / max(1, args.step)))
+            if est_refs > max_refs:
+                new_step = math.ceil(video_length / max_refs)
+                if new_step > args.step:
+                    print(
+                        f"Auto-adjusted step from {args.step} to {new_step} to cap reference frames per batch."
+                    )
+                    args.step = new_step
+        else:
+            allowed_refs = max(0, base_target - neighbor_window)
+            if args.num_ref + 1 > allowed_refs:
+                new_num_ref = max(0, allowed_refs - 1)
+                if new_num_ref < args.num_ref:
+                    print(
+                        f"Auto-adjusted num_ref from {args.num_ref} to {new_num_ref} for VRAM budget."
+                    )
+                    args.num_ref = new_num_ref
 
     to_tensor = to_tensors()
     frame_tensors = torch.stack(
