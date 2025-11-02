@@ -103,8 +103,11 @@ pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 torchaudio==0.12.1 \
     --index-url https://download.pytorch.org/whl/cu113
 
 # mmcv-full wheel for torch 1.12 / CUDA 11.3
-pip install mmcv-full==1.7.2 -f \
-    https://download.openmmlab.com/mmcv/dist/cu113/torch1.12.0/index.html
+# pip install mmcv-full==1.7.2 -f \
+#     https://download.openmmlab.com/mmcv/dist/cu113/torch1.12.0/index.html
+
+pip install -U openmim
+mim install mmcv-full==1.7.2
 
 # Remaining dependencies
 pip install numpy==1.23.5 opencv-python pillow tqdm pyyaml matplotlib
